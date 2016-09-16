@@ -26,6 +26,18 @@
     <WarningLevel>4</WarningLevel>
     <ConsolePause>false</ConsolePause>
   </PropertyGroup>
+  <!-- Set the KSP directory, used to copy the output files into the GameData/AscentGUI directory. -->
+  <!-- Note that the OS for Mac is 'Unix', not sure how to specify a different dir on Linux if I ever needed to. -->
+  <!-- Also, this assumes a Steam install in the default location, so its really a hack. -->
+  <PropertyGroup Condition=" '$(OS)' == 'Unix' ">
+    <KSPDir>/Users/$(USER)/Library/Application Support/Steam/steamapps/common/Kerbal Space Program</KSPDir>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(OS)' == 'Windows_NT' ">
+    <KSPDir>C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program</KSPDir>
+  </PropertyGroup>
+  <PropertyGroup>
+    <KSPModDir>$(KSPDir)/GameData/AscentOptimizer/Plugins</KSPModDir>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="Assembly-CSharp">
@@ -43,4 +55,13 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
+  <Target Name="AfterBuild">
+    <Copy SourceFiles="$(OutputPath)/AscentOptimizer.dll" DestinationFolder="$(KSPModDir)" />
+  </Target>
+  <PropertyGroup Condition=" '$(OS)' == 'Windows_NT' ">
+    <PostBuildEvent>"$(KSPDir)\KSP.exe"</PostBuildEvent>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(OS)' == 'Unix' ">
+    <PostBuildEvent>"$(KSPDir)/KSP.app/Contents/MacOS/KSP"</PostBuildEvent>
+  </PropertyGroup>
 </Project>
