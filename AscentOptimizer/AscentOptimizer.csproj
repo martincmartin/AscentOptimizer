@@ -31,9 +31,11 @@
   <!-- Also, this assumes a Steam install in the default location, so its really a hack. -->
   <PropertyGroup Condition=" '$(OS)' == 'Unix' ">
     <KSPDir>/Users/$(USER)/Library/Application Support/Steam/steamapps/common/Kerbal Space Program</KSPDir>
+    <KSPExe>$(KSPDir)/KSP.app/Contents/MacOS/KSP</KSPExe>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(OS)' == 'Windows_NT' ">
     <KSPDir>C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program</KSPDir>
+    <KSPExe>$(KSPDir)\KSP.exe</KSPExe>
   </PropertyGroup>
   <PropertyGroup>
     <KSPModDir>$(KSPDir)/GameData/AscentOptimizer/Plugins</KSPModDir>
@@ -57,11 +59,6 @@
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <Target Name="AfterBuild">
     <Copy SourceFiles="$(OutputPath)/AscentOptimizer.dll" DestinationFolder="$(KSPModDir)" />
+    <Exec Command="&quot;$(KSPExe)&quot;" />
   </Target>
-  <PropertyGroup Condition=" '$(OS)' == 'Windows_NT' ">
-    <PostBuildEvent>"$(KSPDir)\KSP.exe"</PostBuildEvent>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(OS)' == 'Unix' ">
-    <PostBuildEvent>"$(KSPDir)/KSP.app/Contents/MacOS/KSP"</PostBuildEvent>
-  </PropertyGroup>
 </Project>
