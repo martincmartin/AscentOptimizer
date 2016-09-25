@@ -8,14 +8,12 @@ namespace AscentOptimizer
 	{
 		public KeyCode key = KeyCode.K;
 		public static bool controlEnabled = false;
-		public bool winterOwlModeOff = true;
 		public static Rect windowPos = new Rect(200, 100, 0, 0);
-		public GUIStyle defaultLabelStyle = new GUIStyle(GUI.skin.label);
+		public GUIStyle defaultLabelStyle;
 
 		public void Start()
 		{
 			enabled = true;
-			defaultLabelStyle.wordWrap = false;
 			// Some day we might add settings, like AeroGUI
 			// ConfigNode settings = GameDatabase.Instance.GetConfigNodes("ASCENTOPT")[0];
 		}
@@ -24,6 +22,11 @@ namespace AscentOptimizer
 		{
 			if (controlEnabled)
 			{
+				// Setting this once on object creation wrecks the whole GUI, I don't understand why.  Creating a new
+				// one for each frame works great.
+				defaultLabelStyle = new GUIStyle(GUI.skin.label);
+				defaultLabelStyle.wordWrap = false;
+
 				windowPos = GUILayout.Window("AscentOptimizer".GetHashCode(), windowPos, DrawWindow, "AscentOptimizer");
 			}
 		}
@@ -33,7 +36,6 @@ namespace AscentOptimizer
 			if (GameSettings.MODIFIER_KEY.GetKey() && Input.GetKeyDown(key))
 			{
 				controlEnabled = !controlEnabled;
-				/*
 				if (controlEnabled)
 				{
 					FlightGlobals.ActiveVessel.OnFlyByWire += new FlightInputCallback(fly);
@@ -41,7 +43,6 @@ namespace AscentOptimizer
 				else {
 					FlightGlobals.ActiveVessel.OnFlyByWire -= new FlightInputCallback(fly);
 				}
-				*/
 			}
 		}
 
@@ -78,16 +79,10 @@ namespace AscentOptimizer
 			GUILayout.BeginVertical();
 			GUILayout.FlexibleSpace();
 
-			defaultLabelStyle.wordWrap = false;
-
 			DrawCloseButton();
 
-			GUIStyle labelStyle = new GUIStyle(GUI.skin.label);
-			labelStyle.wordWrap = false;
-			GUILayout.BeginHorizontal();
-			GUILayout.Label("Blah", labelStyle);
-			GUILayout.EndHorizontal();
-			//AddLabel("Hi Mom!");
+			AddLabel("Blah!");
+			AddLabel("Hi Mom!");
 
 			GUILayout.EndVertical();
 			GUI.DragWindow();
