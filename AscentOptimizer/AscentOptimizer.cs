@@ -11,6 +11,11 @@ namespace AscentOptimizer
 		public static Rect windowPos = new Rect(200, 100, 0, 0);
 		public GUIStyle defaultLabelStyle;
 
+		SimpleLinearRegression pointing_from_yaw;
+		public double prevTime = -1;
+		public const double regressionHalfLife = 1.0; // In seconds.
+		public double regressionFactor = Math.Log(2) / regressionHalfLife;
+
 		public void Start()
 		{
 			enabled = true;
@@ -99,22 +104,16 @@ namespace AscentOptimizer
 			AddLabel("srf_velocity: " + vessel.srf_velocity);
 			AddLabel("srf_vel_direction: " + vessel.srf_vel_direction);
 			// "y" is forward.  "x" is yaw (left/right).  "z" is pitch.
-			AddLabel("InverseTransformDirection: " + toStr(vessel.transform.InverseTransformDirection(vessel.srf_velocity)));
-			AddLabel("InverseTransformVector: " + toStr(vessel.transform.InverseTransformVector(vessel.srf_velocity)));
-	        //AddLabel("TransformPoint: " + toStr(vessel.transform.TransformPoint(vessel.srf_velocity)));
+			AddLabel("InverseTransformDirection: " + toStr(vessel.transform.InverseTransformDirection(vessel.srf_vel_direction)));
 
 			// vessel.up and vessel.upAxis seem to be the same, a vector pointing up, away
 			// from the center of the reference body through the vessel.  Or something.
 			AddLabel("vessel.upAxis: " + vessel.upAxis);
 			AddLabel("vessel.up: " + vessel.up);
-			// This is the direction the ship is facing (not necc moving).  Same reference
-			// frame as srf_velocity, as far as I can tell.
-			AddLabel("up: " + toStr(vessel.GetTransform().up));
 
 			// Note that orbit.vel and orbit.pos do NOT change as we're sitting on
 			// the launch pad with Kerbin rotating.  So the velocity is relative to
-			// a rotating frame, but does not subtract out the rotation of that frame,
-			// which is kind of fucked.
+			// a rotating frame, but does not subtract out the rotation of that frame.
 			AddLabel("orbit.vel: " + orbit.vel);
 			AddLabel("orbit.pos: " + orbit.pos);
 			AddLabel("getRFrmVel: " + orbit.referenceBody.getRFrmVel(orbit.pos));
@@ -126,10 +125,72 @@ namespace AscentOptimizer
 			// relative to its start position on the launch pad.  y = "up", out of the plane
 			// of planets; +ve = north pole.  I don't understand X vs Z though.
 			AddLabel("position from transform: " + vessel.GetTransform().position);
+			AddLabel("-----------------------");
+
+			double curTime = FlightGlobals.ActiveVessel.missionTime;
+			AddLabel("mission time: " + curTime.ToString("N3"));
+
+			double weight = 1;
+			if (prevTime >= 0)
+			{
+				double prevWeight = Math.Exp(-regressionFactor * (curTime - prevTime));
+				pointing_from_yaw.decay(prevWeight);
+				weight = 1 - prevWeight;
+			}
+			pointing_from_yaw.observe(FlightInputHandler.state.yaw, angle, weight);
+
+			prevTime = curTime;
 
 			GUILayout.EndVertical();
 			GUI.DragWindow();
 		}
+
+		// So what order of control do we have?
+		// Our input affects the derivative of our facing, which affects the
+		// derivative of our velocity.  So second order, I think.  So the relevant
+		// variables are yaw (our input), the difference between our velocity and heading,
+		// and the difference between our actual velocity and desired velocity.
+		//
+		// To a first approximation, the relationship between facing & actual velocity
+		// is simple:
+		//
+		// v(t + dt) = v(t) + acc(t) * dt
+		//
+		// We can get the total acceleration (which presumably includes drag & whatnot).  Should
+		// be of the form a + b * throttle.  Except that thrust vectoring means we change the
+		// direction of the thrust, i.e. the direction of b.
+		//
+		// So lets just go with a simple formulation.
+		//
+		// I can download math.net numerics, but I'd like to avoid it.  There's a simple
+		// closed form solution for 2 independent variables, so I can focus on that.
+		//
+		// d facing / d t = a + b0 * yaw
+		//
+		// So, only one variable!
+		//
+		// To compute that, we need sum(xi), sum(yi), and sum(xi*yi), as well as n.
+		//
+		// b = sum(wi * (xi - sum(wi*xi)/wT) * (yi - sum(yi - sum(wi*yi)/wT))
+		//         ----------------------
+		//         sum(wi(xi - sum(wi*xi)/wT)^2)
+		//
+		// numerator: sum(wi * (xi * yi - xi * y_ - yi * y_ + x_*y_))
+		//          = sum(wi * xi * yi) - sum(wi * xi) * y_ - sum(wi * yi) * x_ + wT * x_*y_
+		//          = sum(wi * xi * yi) - 2 * sum(wi * xi) * sum(wi * yi) / wT + wT * sum(wi*xi) * sum(wi*yi) / wT^2
+		//          = sum(wi * xi * yi) - sum(wi * xi) * sum(wi * yi) / wT
+		//
+		// denominator = sum(wi * xi * xi - 2 * wi * xi * x_ + wi * x_^2)
+		//             = sum(wi * xi * xi) - 2 * sum(wi * xi) * sum(wi * xi) / wT + wT * sum(wi*xi)^2/wT^2
+		//             = sum(wi * xi * xi) - sum(wi * xi)^2 / wT
+		//
+		// So, I need to keep: sum(wi*xi*yi), sum(wi*xi), sum(wi*yi) and sum(wi).
+		//
+		// What's more, because they're all proportional to wi, its easy to do exponential weighting!
+		//
+		// 
+		//
+
 
 		private void fly(FlightCtrlState s)
 		{
