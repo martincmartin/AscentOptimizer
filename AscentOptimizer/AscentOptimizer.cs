@@ -11,10 +11,15 @@ namespace AscentOptimizer
 		public static Rect windowPos = new Rect(200, 100, 0, 0);
 		public GUIStyle defaultLabelStyle;
 
-		SimpleLinearRegression pointing_from_yaw;
-		public double prevTime = -1;
-		public const double regressionHalfLife = 1.0; // In seconds.
-		public double regressionFactor = Math.Log(2) / regressionHalfLife;
+		double prevTime = -10;
+		Vector3d prevAngularVel;
+
+		double elapsedTime;
+		Vector3d angularAcc;
+
+		SimpleLinearRegression pointing_from_yaw = new SimpleLinearRegression();
+		const double regressionHalfLife = 10.0; // In seconds.
+		double regressionFactor = Math.Log(2) / regressionHalfLife;
 
 		public void Start()
 		{
@@ -38,6 +43,34 @@ namespace AscentOptimizer
 
 		public void Update()
 		{
+			Vessel vessel = FlightGlobals.ActiveVessel;
+			double curTime = vessel.missionTime;
+			elapsedTime = curTime - prevTime;
+			// print("curTime: " + curTime + ", prevTime: " + prevTime + ", elapsed: " + elapsedTime);
+			if (elapsedTime <= 1.0 && elapsedTime > 0.0)
+			{
+				double prevWeight = Math.Exp(-regressionFactor * elapsedTime);
+				pointing_from_yaw.decay(prevWeight);
+				double weight = 1 - prevWeight;
+
+				angularAcc = (vessel.angularVelocityD - prevAngularVel) / elapsedTime;
+
+				pointing_from_yaw.observe(FlightInputHandler.state.yaw, angularAcc.z, weight);
+			}
+			// Vector3 velWRTVessel = vessel.transform.InverseTransformDirection(vessel.srf_vel_direction);
+			// So, what's the formula we need?  A fixed yaw means the thrust is at a fixed angle w.r.t.
+			// heading, but it won't (in general) be going through the center of mass, so it will
+			// cause some angular acceleration, d^2 theta / d t^2.  So I think we have a second order
+			// system after all: d^2 theta / d t^2 = k1 yaw + k2 * d theta / dt.  Although maybe that's it?
+			// Maybe there's no term proportional to theta, so its just first order in d theta / dt?
+			//
+			// It turns out, vessel has both angularVelocity and angularMomentum.  It also has MOI which I assume
+			// is Moment of Inertia.
+
+			prevTime = curTime;
+			prevAngularVel = vessel.angularVelocityD;
+
+
 			if (GameSettings.MODIFIER_KEY.GetKey() && Input.GetKeyDown(key))
 			{
 				controlEnabled = !controlEnabled;
@@ -51,7 +84,7 @@ namespace AscentOptimizer
 			}
 		}
 
-		public void AddLabel(string text, GUIStyle style = null)
+		void AddLabel(string text, GUIStyle style = null)
 		{
 			if (style == null)
 			{
@@ -62,7 +95,7 @@ namespace AscentOptimizer
 			GUILayout.EndHorizontal();
 		}
 
-		public void DrawCloseButton()
+		void DrawCloseButton()
 		{
 			// Enable closing of the window with "x"
 			GUIStyle buttonStyle = new GUIStyle(GUI.skin.button);
@@ -80,9 +113,14 @@ namespace AscentOptimizer
 			GUILayout.EndHorizontal();
 		}
 
-		public static String toStr(Vector3 v)
+		static String toStr(Vector3 v, int precision = 3)
 		{
-			return "(" + v.x.ToString("N3") + ", " + v.y.ToString("N3") + ", " + v.z.ToString("N3") + ")";
+			return "(" + toStr(v.x, precision) + ", " + toStr(v.y, precision) + ", " + toStr(v.z, precision) + ")";
+		}
+
+		static String toStr(double x, int precision = 3)
+		{
+			return x.ToString("N" + precision);
 		}
 
 		public void DrawWindow(int windowID)
@@ -95,51 +133,78 @@ namespace AscentOptimizer
 			Vessel vessel = FlightGlobals.ActiveVessel;
 
 			Orbit orbit = vessel.orbit;
-			AddLabel("orbit.an: " + orbit.an.ToString("N3"));
-			AddLabel("orbit.altitude: " + orbit.altitude.ToString("N3"));
+
+			// So, here's what I've learned about frames, etc.
+			//
+			// altitude: orbit.altitude.
+			//
+			// srf_velocity: Velocity relative to the surface / atmosphere.  (KSP has no wind, so they're the same.)
+			// Zero on the launch pad.  I'm not sure what the coordiante system is, but maybe it doesn't matter.
+			//
+			// vessel.GetTransform(): The direction is the direction we're facing.  Ignore the position, and the scale
+			// is always 1.
+			//
+			// vessel.transform.InverseTransformDirection(vessel.srf_vel_direction): Our velocity relative to us.
+			// "x" is yaw (left/right).  "y" is forward (prograde speed).  "z" is pitch.
+
+			// Not sure what orbit.an is, but we don't need it.
+			// AddLabel("orbit.an: " + orbit.an.ToString("N3"));
+			AddLabel("orbit.altitude: " + toStr(orbit.altitude, 0));
 			// AeroGUI uses nVel = v.srf_velocity.normalized
 			// and: angle of attack = Vector3d.Dot(v.transform.forward, nVel);
 			// and: side slip = Vector3d.Dot(v.transform.up, Vector3d.Exclude(v.transform.forward, nVel).normalized);
 			// and: climb rate = Vector3d.Dot(v.srf_velocity, v.upAxis);
-			AddLabel("srf_velocity: " + vessel.srf_velocity);
-			AddLabel("srf_vel_direction: " + vessel.srf_vel_direction);
+			AddLabel("srf_velocity: " + toStr(vessel.srf_velocity, 0));
+			AddLabel("srf_vel_direction: " + toStr(vessel.srf_vel_direction));
+			// The direction we're heading, relative to how we're facing.
 			// "y" is forward.  "x" is yaw (left/right).  "z" is pitch.
 			AddLabel("InverseTransformDirection: " + toStr(vessel.transform.InverseTransformDirection(vessel.srf_vel_direction)));
 
 			// vessel.up and vessel.upAxis seem to be the same, a vector pointing up, away
 			// from the center of the reference body through the vessel.  Or something.
-			AddLabel("vessel.upAxis: " + vessel.upAxis);
-			AddLabel("vessel.up: " + vessel.up);
+			AddLabel("vessel.upAxis: " + toStr(vessel.upAxis));
+			AddLabel("vessel.up: " + toStr(vessel.up));
 
 			// Note that orbit.vel and orbit.pos do NOT change as we're sitting on
 			// the launch pad with Kerbin rotating.  So the velocity is relative to
 			// a rotating frame, but does not subtract out the rotation of that frame.
-			AddLabel("orbit.vel: " + orbit.vel);
-			AddLabel("orbit.pos: " + orbit.pos);
-			AddLabel("getRFrmVel: " + orbit.referenceBody.getRFrmVel(orbit.pos));
-			AddLabel("ref bod angular vel: " + orbit.referenceBody.angularVelocity);
-			AddLabel("ref bod angular vel Z up: " + orbit.referenceBody.zUpAngularVelocity);
+			AddLabel("orbit.vel: " + toStr(orbit.vel));
+			AddLabel("orbit.pos: " + toStr(orbit.pos, 0));
+//			AddLabel("ref bod angular vel: " + toStr(orbit.referenceBody.angularVelocity));
+//			AddLabel("ref bod angular vel Z up: " + toStr(orbit.referenceBody.zUpAngularVelocity));
 
-			AddLabel("calculated vel: " + (orbit.vel - orbit.referenceBody.getRFrmVel(orbit.pos)));
-			// I think vessel.GetTransform() is the position + orientation of the vessel
-			// relative to its start position on the launch pad.  y = "up", out of the plane
-			// of planets; +ve = north pole.  I don't understand X vs Z though.
-			AddLabel("position from transform: " + vessel.GetTransform().position);
 			AddLabel("-----------------------");
 
-			double curTime = FlightGlobals.ActiveVessel.missionTime;
-			AddLabel("mission time: " + curTime.ToString("N3"));
+			AddLabel("mission time: " + toStr(vessel.missionTime));
+			AddLabel("yaw: " + toStr(FlightInputHandler.state.yaw));
+			AddLabel("vessel.angularVelocity: " + toStr(vessel.angularVelocity, 6));
+			// vessel.angularVelocity seems to be relative to the vessel:
+			// x: pitch (W/S). y: roll (Q/E).  z: yaw (A/D).  Excellent!
+			// There is one force that depends on absolute angle: gravity.  And when doing a gravity turn,
+			// its probably important to take that into account!
+			//
+			// So the formula we need is something like:
+			// d omega / dt = k1 * yaw + k2 * omega + k3 * angle
 
-			double weight = 1;
-			if (prevTime >= 0)
-			{
-				double prevWeight = Math.Exp(-regressionFactor * (curTime - prevTime));
-				pointing_from_yaw.decay(prevWeight);
-				weight = 1 - prevWeight;
-			}
-			pointing_from_yaw.observe(FlightInputHandler.state.yaw, angle, weight);
+			AddLabel("elapsedTime: " + toStr(elapsedTime, 5));
+			AddLabel("angularAcc: " + toStr(angularAcc, 5));
 
-			prevTime = curTime;
+			double intercept;
+			double x_coefficient;
+			double x_var;
+			pointing_from_yaw.solve(out intercept, out x_coefficient, out x_var);
+
+			AddLabel("angular accel = " + toStr(x_coefficient, 5) + "*yaw + " + toStr(intercept, 5) + ", x_var: " + toStr(x_var, 5));
+			// Vector3 velWRTVessel = vessel.transform.InverseTransformDirection(vessel.srf_vel_direction);
+			// So, what's the formula we need?  A fixed yaw means the thrust is at a fixed angle w.r.t.
+			// heading, but it won't (in general) be going through the center of mass, so it will
+			// cause some angular acceleration, d^2 theta / d t^2.  So I think we have a second order
+			// system after all: d^2 theta / d t^2 = k1 yaw + k2 * d theta / dt.  Although maybe that's it?
+			// Maybe there's no term proportional to theta, so its just first order in d theta / dt?
+			//
+			// It turns out, vessel has both angularVelocity and angularMomentum.  It also has MOI which I assume
+			// is Moment of Inertia.
+
 
 			GUILayout.EndVertical();
 			GUI.DragWindow();
