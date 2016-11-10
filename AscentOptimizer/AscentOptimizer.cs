@@ -11,10 +11,9 @@ namespace AscentOptimizer
 		public static Rect windowPos = new Rect(200, 100, 0, 0);
 		public GUIStyle defaultLabelStyle;
 
-		double prevTime = -10;
 		Vector3d prevAngularVel;
+		Vector3 prevVelocity;
 
-		double elapsedTime;
 		Vector3d angularAcc;
 
 		SimpleLinearRegression pointing_from_yaw = new SimpleLinearRegression();
@@ -41,22 +40,46 @@ namespace AscentOptimizer
 			}
 		}
 
-		public void Update()
+		public void FixedUpdate()
 		{
+			print("------- FixedUpdate ----------");
+			      
 			Vessel vessel = FlightGlobals.ActiveVessel;
-			double curTime = vessel.missionTime;
-			elapsedTime = curTime - prevTime;
-			// print("curTime: " + curTime + ", prevTime: " + prevTime + ", elapsed: " + elapsedTime);
-			if (elapsedTime <= 1.0 && elapsedTime > 0.0)
-			{
-				double prevWeight = Math.Exp(-regressionFactor * elapsedTime);
+			// TimeWarp.fixedDeltaTime is what *will* be used to compute the *next* velocity, not what
+			// was used to compute the current one.  That's in TimeWarp.deltaTime.  Can't they come up with more descriptive
+			// names for these things???
+
+			// Vessel.nextVel is always (0, 0, 0), in both FixedUpdate() and Update().
+			// Vessel.lastVel is different in every call to FixedUpdate(), as you'd expect with something physics related.
+
+			Vector3d deltaVelocity = FlightGlobals.ActiveVessel.velocityD - prevVelocity;
+			Vector3d frameVelocity = new Vector3d(0, 0, 0);
+			Krakensbane.AddFrameVelocity(frameVelocity);
+
+			print("fixedDT: " + toStr(TimeWarp.fixedDeltaTime) + ", deltaT: " + toStr(TimeWarp.deltaTime) + "\n" +
+			      "accel: " + toStr(vessel.acceleration) + "("+toStr(vessel.acceleration.magnitude)+"), from fixedDT: " + toStr(deltaVelocity / TimeWarp.fixedDeltaTime) +
+			      ", from deltaT: " + toStr(deltaVelocity / TimeWarp.deltaTime) + " ("+toStr(deltaVelocity.magnitude / TimeWarp.deltaTime)+")\n" +
+			      "vel: "+toStr(vessel.velocityD) + ", last correction: " + toStr(Krakensbane.GetLastCorrection()) +
+			      ", frameVelocity: " + toStr(frameVelocity)+
+			      ", GetFrameVelocity(): "+toStr(Krakensbane.GetFrameVelocity()));
+
+	//		prevVelocity = FlightGlobals.ActiveVessel.velocityD;
+			/*
+			print("deltaTime: " + TimeWarp.deltaTime + "\n" +
+				"vessel.acceleration: " + toStr(vessel.acceleration) +
+				  ", from srf_velocity: " + toStr((vessel.srf_velocity - prevVel) / TimeWarp.deltaTime) + "\n"+
+				"lastVel: " + toStr(vessel.lastVel) + ", nextVel: " + toStr(vessel.nextVel)+"\n"+
+				"orbit.pos: " + toStr(vessel.orbit.pos)+", angularVelocity: " + toStr(vessel.angularVelocityD));
+*/
+			// Need to guard this against angularVelocityD being from a long time ago.  Hmm.
+				double prevWeight = Math.Exp(-regressionFactor * TimeWarp.deltaTime);
 				pointing_from_yaw.decay(prevWeight);
 				double weight = 1 - prevWeight;
 
-				angularAcc = (vessel.angularVelocityD - prevAngularVel) / elapsedTime;
+			angularAcc = (vessel.angularVelocityD - prevAngularVel) / TimeWarp.deltaTime;
 
 				pointing_from_yaw.observe(FlightInputHandler.state.yaw, angularAcc.z, weight);
-			}
+
 			// Vector3 velWRTVessel = vessel.transform.InverseTransformDirection(vessel.srf_vel_direction);
 			// So, what's the formula we need?  A fixed yaw means the thrust is at a fixed angle w.r.t.
 			// heading, but it won't (in general) be going through the center of mass, so it will
@@ -67,9 +90,18 @@ namespace AscentOptimizer
 			// It turns out, vessel has both angularVelocity and angularMomentum.  It also has MOI which I assume
 			// is Moment of Inertia.
 
-			prevTime = curTime;
 			prevAngularVel = vessel.angularVelocityD;
+			prevVelocity = vessel.velocityD;
+		}
 
+		public void Update()
+		{
+			/*
+			Vessel vessel = FlightGlobals.ActiveVessel;
+
+			print("============= Update ==========\n"+
+			      "lastVel: " + toStr(vessel.lastVel) + ", nextVel: " + toStr(vessel.nextVel));
+			      */
 
 			if (GameSettings.MODIFIER_KEY.GetKey() && Input.GetKeyDown(key))
 			{
@@ -115,7 +147,8 @@ namespace AscentOptimizer
 
 		static String toStr(Vector3 v, int precision = 3)
 		{
-			return "(" + toStr(v.x, precision) + ", " + toStr(v.y, precision) + ", " + toStr(v.z, precision) + ")";
+			return "(" + toStr(v.x, precision) + ", " + toStr(v.y, precision) + ", " + toStr(v.z, precision) + ") [" +
+				toStr(v.magnitude, precision) + "]";
 		}
 
 		static String toStr(double x, int precision = 3)
@@ -186,7 +219,7 @@ namespace AscentOptimizer
 			// So the formula we need is something like:
 			// d omega / dt = k1 * yaw + k2 * omega + k3 * angle
 
-			AddLabel("elapsedTime: " + toStr(elapsedTime, 5));
+//			AddLabel("elapsedTime: " + toStr(elapsedTime, 5));
 			AddLabel("angularAcc: " + toStr(angularAcc, 5));
 
 			double intercept;
