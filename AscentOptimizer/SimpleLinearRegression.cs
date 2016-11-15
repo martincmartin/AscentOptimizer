@@ -48,8 +48,13 @@ namespace AscentOptimizer
 		public double sum_w_x_y = 0;
 		public double sum_w = 0;
 
-		public SimpleLinearRegression()
+		public double prior_x_y_covariance;
+		public double prior_var_x;
+
+		public SimpleLinearRegression(double prior_x_coefficient, double prior_var_x)
 		{
+			this.prior_var_x = prior_var_x;
+			prior_x_y_covariance = prior_x_coefficient * prior_var_x;
 		}
 
 		public void observe(double x, double y, double w)
@@ -71,17 +76,34 @@ namespace AscentOptimizer
 			sum_w *= gamma;
 		}
 
-		public void solve(out double intercept, out double x_coefficient, out double x_var)
+		public void solve(out double intercept, out double x_coefficient, out double var_x)
 		{
 			// What to do when this denominator is near zero?
 			//
 			// Happens when sum(wi * (xi - x_)^2) == 0, i.e. when all xis are the same (assuming weights are non-zero).
 			//
-			// Regularize?  Give confience interval?
-			double x_mean = sum_w_x / sum_w;
-			x_coefficient = (sum_w_x_y * sum_w - sum_w_x * sum_w_y) / (sum_w_x_x * sum_w - sum_w_x * sum_w_x);
-			intercept = sum_w_y / sum_w - x_coefficient * x_mean;
-			x_var = sum_w_x_x / sum_w - x_mean * x_mean;
+			// We do inverse variance weighting!  The variance of x_coefficient is proportional to 1/var_x.  So,
+			// inverse variance weighting is:
+			//
+			// x_coeff / var(x_coeff) + prior_x_coeff / var(prior_x_coeff)
+			// -----------------------------------------------------------
+			//     1 / var(x_coeff) + 1 / var(prior_x_coeff)
+			//
+			//   x_coeff * var_x + prior_x_coeff * prior_var_x
+			// = ----------------------------------------------
+			//              var_x + prior_var_x
+			//
+			// Where I kind of glossed over the constant of proportionality (which is the variance of the y error),
+			// assuming it was the same for both the observed & the prior.
+			//
+			// Note that x_coeff * var_x is just x_y_covariance.
+
+			double mean_x = sum_w_x / sum_w;
+			double mean_y = sum_w_y / sum_w;
+			var_x = sum_w_x_x / sum_w - mean_x * mean_x;
+			double x_y_covariance = (sum_w_x_y / sum_w - mean_x * mean_y);
+			x_coefficient = (x_y_covariance + prior_x_y_covariance) / (var_x + prior_var_x);
+			intercept = mean_y - x_coefficient * mean_x;
 		}
 	}
 }

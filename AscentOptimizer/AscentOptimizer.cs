@@ -17,11 +17,13 @@ namespace AscentOptimizer
 //		float prevThrottle;
 		FlightCtrlState prevState = new FlightCtrlState();
 
-		SimpleLinearRegression rollToTorque = new SimpleLinearRegression();
-		SimpleLinearRegression pitchToTorque = new SimpleLinearRegression();
-		SimpleLinearRegression yawToTorque = new SimpleLinearRegression();
+		// Note: a conservative value for prior_x_coeff is a LARGE value.  A large value means we think we only need
+		// small control values to produce reasonable torque.
+		SimpleLinearRegression rollToTorque = new SimpleLinearRegression(-20.0, 1e-8);
+		SimpleLinearRegression pitchToTorque = new SimpleLinearRegression(-20.0, 1e-8);
+		SimpleLinearRegression yawToTorque = new SimpleLinearRegression(-20.0, 1e-8);
 
-		const double regressionHalfLife = 10.0; // In seconds.
+		const double regressionHalfLife = 5.0; // In seconds.
 		double regressionFactor = Math.Log(2) / regressionHalfLife;
 
 		public void Start()
@@ -172,8 +174,8 @@ namespace AscentOptimizer
 			// For torque: x: pitch, y: roll, z: yaw
 			Vector3 torque = vessel.transform.InverseTransformDirection((globalAngularMom - prevAngularMom) / TimeWarp.deltaTime);
 			print("postAutopilot: throttle: " + s.mainThrottle + ", yaw: " + s.yaw+"\n"+
-			      "throttle: " + s.mainThrottle + " " + FlightInputHandler.state.mainThrottle+" "+prevState.mainThrottle+" -> " + toStr(linearAcc.magnitude) + ", yaw: " + prevState.yaw+" -> " + toStr(torque.z, 5)+"\n"+
-			      "pitch: "+toStr(prevState.pitch)+", roll: "+toStr(prevState.roll)+", torque: "+toStr(torque));//+", transformed: " + toStr(vessel.transform.TransformDirection(vessel.angularMomentum)));
+			      "throttle: "+prevState.mainThrottle+" -> " + toStr(linearAcc.magnitude) + ", yaw: " + prevState.yaw+" -> " + toStr(torque.z, 5)+
+			      ", pitch: "+prevState.pitch+" -> "+toStr(torque.x, 5)+", roll: "+prevState.roll+" -> "+toStr(torque.y, 5));//+", transformed: " + toStr(vessel.transform.TransformDirection(vessel.angularMomentum)));
 
 			/*			print("deltaT: " + toStr(TimeWarp.deltaTime) + "\n" +
 							  "accel: " + toStr(vessel.acceleration_immediate, 5) + ", from deltaT: " + toStr(deltaVelocity / TimeWarp.deltaTime, 5) + "\n" +
@@ -194,7 +196,7 @@ namespace AscentOptimizer
 			pitchToTorque.observe(prevState.pitch, torque.x, weight);
 			rollToTorque.observe(prevState.roll, torque.y, weight);
 
-			prevState.CopyFrom(s);
+//			prevState.CopyFrom(s);
 		}
 
 
@@ -248,6 +250,16 @@ namespace AscentOptimizer
 			AddLabel("torque = " + toStr(x_coefficient, 5) + "*" + xLabel + " + " + toStr(intercept, 5) + ", variance: " + toStr(x_var, 5));
 		}
 
+		float coeff(SimpleLinearRegression regression)
+		{
+			double intercept;
+			double x_coefficient;
+			double x_var;
+
+			regression.solve(out intercept, out x_coefficient, out x_var);
+
+			return (float)x_coefficient;
+		}
 		public void DrawWindow(int windowID)
 		{
 			GUILayout.BeginVertical();
@@ -393,6 +405,30 @@ namespace AscentOptimizer
 
 			// A first goal could just be to kill velocity, i.e. angular momentum.  Could just stay in momentum/torque
 			// world, wouldn't need to use MOI to translate into velocity/position.
+			//
+			// As for what gains we could use: Given that we know the value of deltaTime, we could just choose a value
+			// that would cancel the velocity in n timesteps.  If n = 1, we essentially have bang-bang control.  That's
+			// pretty optimistic.  :)  We could choose an n like 3 or 5, at least initially.
+
+			// In theory, I should care about the intercept too.  Maybe later.
+			//
+			// We have that delta_angularMom / dt = torque = control * coeff(XToTorque).
+			//
+			// Solve for control:
+			//
+			// control = torque / coeff(XToTorque).
+			float rollCoeff = coeff(rollToTorque);
+			float pitchCoeff = coeff(pitchToTorque);
+			float yawCoeff = coeff(yawToTorque);
+
+			// For angularMomentum: x: pitch, y: roll, z: yaw
+
+			// Torque required to eliminate in a handfull of timesteps.
+			var desiredTorque = - vessel.angularMomentum / TimeWarp.fixedDeltaTime / 2f;
+
+			s.pitch = Math.Max(-1, Math.Min(1, desiredTorque.x / pitchCoeff));
+			s.roll = Math.Max(-1, Math.Min(1, desiredTorque.y / rollCoeff));
+			s.yaw = Math.Max(-1, Math.Min(1, desiredTorque.z / yawCoeff));
 
 
 			// For critical damping, in a system with equation of motion:
@@ -450,6 +486,9 @@ namespace AscentOptimizer
 			// see http://wiki.kerbalspaceprogram.com/wiki/Module_code_examples
 
 			// see also http://forum.kerbalspaceprogram.com/index.php?/topic/47341-flightctrlstate-not-working-as-i-expect/
+
+			prevState.CopyFrom(s);
+
 		}
 	}
 }
