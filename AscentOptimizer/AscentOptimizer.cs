@@ -17,6 +17,9 @@ namespace AscentOptimizer
 //		float prevThrottle;
 		FlightCtrlState prevState = new FlightCtrlState();
 
+		Vector3 deltaAngleUI;
+		Vector3 desiredTorqueUI;
+
 		// Note: a conservative value for prior_x_coeff is a LARGE value.  A large value means we think we only need
 		// small control values to produce reasonable torque.
 		SimpleLinearRegression rollToTorque = new SimpleLinearRegression(-20.0, 1e-8);
@@ -341,7 +344,17 @@ namespace AscentOptimizer
 			// It turns out, vessel has both angularVelocity and angularMomentum.  It also has MOI which I assume
 			// is Moment of Inertia.
 
+			Vector3d targetDirection = vessel.transform.InverseTransformDirection(vessel.orbit.GetRelativeVel().normalized);
+			AddLabel("inv transform: " + toStr(targetDirection));
+			// x: yaw, y: 1.00, z: pitch
 
+			AddLabel("euler angles: " + toStr(deltaAngleUI));
+			// y: yaw
+			// x: pitch
+
+			AddLabel("desiredTorque: " + toStr(desiredTorqueUI));
+
+			AddLabel("pitch: " + toStr(prevState.pitch) + ", roll: " + toStr(prevState.roll) + ", yaw: " + toStr(prevState.yaw));
 
 			GUILayout.EndVertical();
 			GUI.DragWindow();
@@ -398,7 +411,7 @@ namespace AscentOptimizer
 		{
 			var vessel = FlightGlobals.ActiveVessel;
 
-			Orbit orbit = FlightGlobals.ActiveVessel.orbit;
+			Orbit orbit = vessel.orbit;
 
 			// MOI: y is for roll.
 			print("MOI: " + toStr(vessel.MOI));
@@ -421,10 +434,39 @@ namespace AscentOptimizer
 			float pitchCoeff = coeff(pitchToTorque);
 			float yawCoeff = coeff(yawToTorque);
 
+			// Let's face an arbitrary direction, for now prograde:
+			Vector3d targetDirection = vessel.transform.InverseTransformDirection(vessel.orbit.GetRelativeVel().normalized);
+			double oldY = targetDirection.y;
+			targetDirection.y = targetDirection.z;
+			targetDirection.z = oldY;
+
+			Vector3 euler = Quaternion.LookRotation(targetDirection).eulerAngles;
+			if (euler.x > 180)
+			{
+				euler.x -= 360;
+			}
+			if (euler.y > 180)
+			{
+				euler.y -= 360;
+			}
+			euler *= (float)Math.PI / 180;
+			// y: yaw
+			// x: pitch
+
+			// Translate targetDirection from angle into angular momentum:
+			var deltaAngle = new Vector3((float)euler.x * vessel.MOI.x, 0, (float)euler.y * vessel.MOI.z);
+			deltaAngleUI = deltaAngle;
+
+
 			// For angularMomentum: x: pitch, y: roll, z: yaw
 
-			// Torque required to eliminate in a handfull of timesteps.
-			var desiredTorque = - vessel.angularMomentum / TimeWarp.fixedDeltaTime / 2f;
+			// Coefficient of angularMomentum that produces a torque required to eliminate in a handfull of timesteps.
+			var d = 1 / TimeWarp.fixedDeltaTime / 2f;
+			// For critical damping, we want d = 2 * sqrt(p), i.e.
+			var p = d * d / 4;
+			var desiredTorque = - d * vessel.angularMomentum - p * deltaAngle;
+			print(toStr(-d) + " * " + toStr(vessel.angularMomentum) + " - " + toStr(p) + " * " + toStr(deltaAngle) + " = " + toStr(desiredTorque));
+			desiredTorqueUI = desiredTorque;
 
 			s.pitch = Math.Max(-1, Math.Min(1, desiredTorque.x / pitchCoeff));
 			s.roll = Math.Max(-1, Math.Min(1, desiredTorque.y / rollCoeff));
