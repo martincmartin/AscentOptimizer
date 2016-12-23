@@ -13,8 +13,6 @@ namespace AscentOptimizer
 
 		Vector3 prevVelocity;
 		Vector3 prevAngularMom;
-//		float prevYaw;
-//		float prevThrottle;
 		FlightCtrlState prevState = new FlightCtrlState();
 
 		Vector3 deltaAngleUI;
@@ -49,92 +47,9 @@ namespace AscentOptimizer
 			}
 		}
 
-		public void FixedUpdate()
-		{
-			Vessel vessel = FlightGlobals.ActiveVessel;
-			// TimeWarp.fixedDeltaTime is what *will* be used to compute the *next* velocity, not what
-			// was used to compute the current one.  That's in TimeWarp.deltaTime.  Can't they come up with more descriptive
-			// names for these things???
-
-			// Vessel.nextVel is always (0, 0, 0), in both FixedUpdate() and Update().
-			// Vessel.lastVel is different in every call to FixedUpdate(), as you'd expect with something physics related.
-
-			Vector3d deltaVelocity = FlightGlobals.ActiveVessel.velocityD - prevVelocity;
-
-			print("fixedDT: " + toStr(TimeWarp.fixedDeltaTime) + ", deltaT: " + toStr(TimeWarp.deltaTime) + "\n" +
-			      "accel: " + toStr(vessel.acceleration_immediate, 5) + ", from deltaT: " + toStr(deltaVelocity / TimeWarp.deltaTime, 5) + "\n" +
-			      "vel: "+toStr(vessel.velocityD) + ", last correction: " + toStr(Krakensbane.GetLastCorrection()) +
-			      ", GetFrameVelocity(): "+toStr(Krakensbane.GetFrameVelocity()));
-			//////////  Order of calling
-			//
-			//  So postAutoPilot() and fly() are actually called BEFORE FixedUpdate().
-			//////////  Throttle
-			//
-			// Learning: FlightInputHandler.state.mainThrottle should be used with accel computed in this frame.
-
-			//////////  Yaw
-			//
-			// Learning: FlightInputHandler.state.yaw should be used with acccel from *future* frames.
-			// Or you could use ModuleGimbal, but that's not guaranteed to exist.
-			/*
-			foreach (var p in vessel.Parts)
-			{
-//				print("name: " + p.name + ", partname: " + p.partName + ", classname: " + p.ClassName);
-//				string mods = "";
-				foreach (PartModule m in p.Modules)
-				{
-					//					mods += "     name: " + m.name + ", GUIName: " + m.GUIName + ", classname: " + m.ClassName + ", modulename: " + m.moduleName + "\n";
-
-					if (m is ModuleGimbal)
-					{
-						// So actuation (and actuationLocal) change much closer in time to what the physics sees.
-						// However, they still change instantaneously and the acceleration still has lag.
-						var g = (ModuleGimbal)m;
-						// In actuation, z = yaw.
-						print("actuation: " + toStr(g.actuation) + ", local: " + toStr(g.actuationLocal) +
-							 ", xMult: " + toStr(g.xMult) + ", yMult: " + toStr(g.yMult));
-					}
-					else if (m is ModuleEngines) {
-						var e = (ModuleEngines)m;
-						print("requestedThrottle: " + toStr(e.requestedThrottle) + ", currentThrottle: " + toStr(e.currentThrottle) + ", responseRate: " + toStr(e.throttleResponseRate));
-					}
-				}
-//				print(mods);
-			}
-			*/
-
-			/*
-			print("deltaTime: " + TimeWarp.deltaTime + "\n" +
-				"vessel.acceleration: " + toStr(vessel.acceleration) +
-				  ", from srf_velocity: " + toStr((vessel.srf_velocity - prevVel) / TimeWarp.deltaTime) + "\n"+
-				"lastVel: " + toStr(vessel.lastVel) + ", nextVel: " + toStr(vessel.nextVel)+"\n"+
-				"orbit.pos: " + toStr(vessel.orbit.pos)+", angularVelocity: " + toStr(vessel.angularVelocityD));
-*/
-
-
-			// Vector3 velWRTVessel = vessel.transform.InverseTransformDirection(vessel.srf_vel_direction);
-			// So, what's the formula we need?  A fixed yaw means the thrust is at a fixed angle w.r.t.
-			// heading, but it won't (in general) be going through the center of mass, so it will
-			// cause some angular acceleration, d^2 theta / d t^2.  So I think we have a second order
-			// system after all: d^2 theta / d t^2 = k1 yaw + k2 * d theta / dt.  Although maybe that's it?
-			// Maybe there's no term proportional to theta, so its just first order in d theta / dt?
-			//
-			// It turns out, vessel has both angularVelocity and angularMomentum.  It also has MOI which I assume
-			// is Moment of Inertia.
-
-			prevAngularMom = vessel.transform.TransformDirection(vessel.angularMomentum);
-			prevVelocity = vessel.velocityD;
-			print("------- End FixedUpdate ----------");
-		}
-
 		public void Update()
 		{
-//			Vessel vessel = FlightGlobals.ActiveVessel;
-
-//			print("============= Update ==========\n");
-/*			      "lastVel: " + toStr(vessel.lastVel) + ", nextVel: " + toStr(vessel.nextVel));
-			      */
-
+			print("------- Update() ----------");
 			if (GameSettings.MODIFIER_KEY.GetKey() && Input.GetKeyDown(key))
 			{
 				controlEnabled = !controlEnabled;
@@ -148,58 +63,6 @@ namespace AscentOptimizer
 					FlightGlobals.ActiveVessel.OnPostAutopilotUpdate -= new FlightInputCallback(postAutopilot);
 				}
 			}
-		}
-
-		private void postAutopilot(FlightCtrlState s)
-		{
-			// This seems to affect, not the next FixedUpdate(), but the one after that, or even the one after that!
-			// Actually, there seems to be a little bit of hidden state: the yaw control is changing something else
-			// (like the angle of the thruster?) that has some inertia and takes some time to get to its final angle.
-			//
-			// For throttle, ModuleEngine has these fields:
-			//
-			// float ModuleEngines.currentThrottle
-			// The current internal throttle of the engine, which may be different from the current throttle set by the player if useEngineResponseTime is true.
-
-            // float ModuleEngines.engineAccelerationSpeed
-            // How quickly the engine spools up when the user-set throttle is higher than currentThrottle.
-
-            // Each frame, if the user throttle is higher than the engine's currentThrottle, currentThrottle is updated according to the formula
-
-            // currentThrottle += (user throttle - currentThrottle) * engineAccelerationSpeed* dt
-            // engineAccelerationSpeed has units of inverse seconds.
-
-			Vessel vessel = FlightGlobals.ActiveVessel;
-			Vector3d linearAcc = (vessel.velocityD - prevVelocity) / TimeWarp.deltaTime;
-
-			Vector3 globalAngularMom = vessel.transform.TransformDirection(vessel.angularMomentum);
-
-			// For torque: x: pitch, y: roll, z: yaw
-			Vector3 torque = vessel.transform.InverseTransformDirection((globalAngularMom - prevAngularMom) / TimeWarp.deltaTime);
-			print("postAutopilot: throttle: " + s.mainThrottle + ", yaw: " + s.yaw+"\n"+
-			      "throttle: "+prevState.mainThrottle+" -> " + toStr(linearAcc.magnitude) + ", yaw: " + prevState.yaw+" -> " + toStr(torque.z, 5)+
-			      ", pitch: "+prevState.pitch+" -> "+toStr(torque.x, 5)+", roll: "+prevState.roll+" -> "+toStr(torque.y, 5));//+", transformed: " + toStr(vessel.transform.TransformDirection(vessel.angularMomentum)));
-
-			/*			print("deltaT: " + toStr(TimeWarp.deltaTime) + "\n" +
-							  "accel: " + toStr(vessel.acceleration_immediate, 5) + ", from deltaT: " + toStr(deltaVelocity / TimeWarp.deltaTime, 5) + "\n" +
-							  "vel: " + toStr(vessel.velocityD) + ", last correction: " + toStr(Krakensbane.GetLastCorrection()) +
-							  ", GetFrameVelocity(): " + toStr(Krakensbane.GetFrameVelocity()) + "\n" +
-							  "throttle: " + FlightInputHandler.state.mainThrottle + ", yaw: " + FlightInputHandler.state.yaw + ", yawAccel: " + toStr(angularAcc.z, 5));
-
-			*/
-			// Need to guard this against prevState being from a long time ago.  Hmm.
-			double prevWeight = Math.Exp(-regressionFactor * TimeWarp.deltaTime);
-			double weight = 1 - prevWeight;
-
-			yawToTorque.decay(prevWeight);
-			pitchToTorque.decay(prevWeight);
-			rollToTorque.decay(prevWeight);
-
-			yawToTorque.observe(prevState.yaw, torque.z, weight);
-			pitchToTorque.observe(prevState.pitch, torque.x, weight);
-			rollToTorque.observe(prevState.roll, torque.y, weight);
-
-//			prevState.CopyFrom(s);
 		}
 
 
@@ -263,6 +126,7 @@ namespace AscentOptimizer
 
 			return (float)x_coefficient;
 		}
+
 		public void DrawWindow(int windowID)
 		{
 			GUILayout.BeginVertical();
@@ -360,6 +224,18 @@ namespace AscentOptimizer
 			GUI.DragWindow();
 		}
 
+		/*
+		 * Order of operations in Unity:
+		 * 
+		 * loop:
+		 *     postAutoPilot()
+		 *     fly()
+		 *     FixedUpdate()
+		 *     [physics calculations]
+		 * 
+		 * Update()
+		 */
+
 		// So what order of control do we have?
 		// Our input affects the derivative of our facing, which affects the
 		// derivative of our velocity.  So second order, I think.  So the relevant
@@ -402,10 +278,58 @@ namespace AscentOptimizer
 		// So, I need to keep: sum(wi*xi*yi), sum(wi*xi), sum(wi*yi) and sum(wi).
 		//
 		// What's more, because they're all proportional to wi, its easy to do exponential weighting!
-		//
-		// 
-		//
 
+		private void postAutopilot(FlightCtrlState s)
+		{
+			// This seems to affect, not the next FixedUpdate(), but the one after that, or even the one after that!
+			// Actually, there seems to be a little bit of hidden state: the yaw control is changing something else
+			// (like the angle of the thruster?) that has some inertia and takes some time to get to its final angle.
+			//
+			// For throttle, ModuleEngine has these fields:
+			//
+			// float ModuleEngines.currentThrottle
+			// The current internal throttle of the engine, which may be different from the current throttle set by the player if useEngineResponseTime is true.
+
+			// float ModuleEngines.engineAccelerationSpeed
+			// How quickly the engine spools up when the user-set throttle is higher than currentThrottle.
+
+			// Each frame, if the user throttle is higher than the engine's currentThrottle, currentThrottle is updated according to the formula
+
+			// currentThrottle += (user throttle - currentThrottle) * engineAccelerationSpeed* dt
+			// engineAccelerationSpeed has units of inverse seconds.
+
+			Vessel vessel = FlightGlobals.ActiveVessel;
+			Vector3d linearAcc = (vessel.velocityD - prevVelocity) / TimeWarp.deltaTime;
+
+			Vector3 globalAngularMom = vessel.transform.TransformDirection(vessel.angularMomentum);
+
+			// For torque: x: pitch, y: roll, z: yaw
+			Vector3 torque = vessel.transform.InverseTransformDirection((globalAngularMom - prevAngularMom) / TimeWarp.deltaTime);
+			print("postAutopilot: throttle: " + s.mainThrottle + ", yaw: " + s.yaw + "\n" +
+				  "throttle: " + prevState.mainThrottle + " -> " + toStr(linearAcc.magnitude) + ", yaw: " + prevState.yaw + " -> " + toStr(torque.z, 5) +
+				  ", pitch: " + prevState.pitch + " -> " + toStr(torque.x, 5) + ", roll: " + prevState.roll + " -> " + toStr(torque.y, 5));//+", transformed: " + toStr(vessel.transform.TransformDirection(vessel.angularMomentum)));
+
+			/*			print("deltaT: " + toStr(TimeWarp.deltaTime) + "\n" +
+							  "accel: " + toStr(vessel.acceleration_immediate, 5) + ", from deltaT: " + toStr(deltaVelocity / TimeWarp.deltaTime, 5) + "\n" +
+							  "vel: " + toStr(vessel.velocityD) + ", last correction: " + toStr(Krakensbane.GetLastCorrection()) +
+							  ", GetFrameVelocity(): " + toStr(Krakensbane.GetFrameVelocity()) + "\n" +
+							  "throttle: " + FlightInputHandler.state.mainThrottle + ", yaw: " + FlightInputHandler.state.yaw + ", yawAccel: " + toStr(angularAcc.z, 5));
+
+			*/
+			// Need to guard this against prevState being from a long time ago.  Hmm.
+			double prevWeight = Math.Exp(-regressionFactor * TimeWarp.deltaTime);
+			double weight = 1 - prevWeight;
+
+			yawToTorque.decay(prevWeight);
+			pitchToTorque.decay(prevWeight);
+			rollToTorque.decay(prevWeight);
+
+			yawToTorque.observe(prevState.yaw, torque.z, weight);
+			pitchToTorque.observe(prevState.pitch, torque.x, weight);
+			rollToTorque.observe(prevState.roll, torque.y, weight);
+
+			//			prevState.CopyFrom(s);
+		}
 
 		private void fly(FlightCtrlState s)
 		{
@@ -414,7 +338,7 @@ namespace AscentOptimizer
 			Orbit orbit = vessel.orbit;
 
 			// MOI: y is for roll.
-			print("MOI: " + toStr(vessel.MOI));
+//			print("MOI: " + toStr(vessel.MOI));
 
 			// A first goal could just be to kill velocity, i.e. angular momentum.  Could just stay in momentum/torque
 			// world, wouldn't need to use MOI to translate into velocity/position.
@@ -532,5 +456,41 @@ namespace AscentOptimizer
 			prevState.CopyFrom(s);
 
 		}
+
+		public void FixedUpdate()
+		{
+			Vessel vessel = FlightGlobals.ActiveVessel;
+			// TimeWarp.fixedDeltaTime is what *will* be used to compute the *next* velocity, not what
+			// was used to compute the current one.  That's in TimeWarp.deltaTime.  Can't they come up with more descriptive
+			// names for these things???
+
+			// Vessel.nextVel is always (0, 0, 0), in both FixedUpdate() and Update().
+			// Vessel.lastVel is different in every call to FixedUpdate(), as you'd expect with something physics related.
+			/*
+						Vector3d deltaVelocity = FlightGlobals.ActiveVessel.velocityD - prevVelocity;
+
+						print("fixedDT: " + toStr(TimeWarp.fixedDeltaTime) + ", deltaT: " + toStr(TimeWarp.deltaTime) + "\n" +
+							  "accel: " + toStr(vessel.acceleration_immediate, 5) + ", from deltaT: " + toStr(deltaVelocity / TimeWarp.deltaTime, 5) + "\n" +
+							  "vel: "+toStr(vessel.velocityD) + ", last correction: " + toStr(Krakensbane.GetLastCorrection()) +
+							  ", GetFrameVelocity(): "+toStr(Krakensbane.GetFrameVelocity()));
+							  */
+			//////////  Order of calling
+			//
+			//  So postAutoPilot() and fly() are actually called BEFORE FixedUpdate().
+			//////////  Throttle
+			//
+			// FlightInputHandler.state.mainThrottle is the throttle used over the previous time step.
+
+			//////////  Yaw
+			//
+			// Learning: FlightInputHandler.state.yaw is what will be used over the next time step.
+
+
+			prevAngularMom = vessel.transform.TransformDirection(vessel.angularMomentum);
+
+			// Currently only used for printing.
+			prevVelocity = vessel.velocityD;
+		}
+
 	}
 }
