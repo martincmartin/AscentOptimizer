@@ -55,12 +55,12 @@ namespace AscentOptimizer
 				controlEnabled = !controlEnabled;
 				if (controlEnabled)
 				{
-					FlightGlobals.ActiveVessel.OnFlyByWire += new FlightInputCallback(fly);
-					FlightGlobals.ActiveVessel.OnPostAutopilotUpdate += new FlightInputCallback(postAutopilot);
+					FlightGlobals.ActiveVessel.OnFlyByWire += new FlightInputCallback(Fly);
+//					FlightGlobals.ActiveVessel.OnPostAutopilotUpdate += new FlightInputCallback(PostAutopilot);
 				}
 				else {
-					FlightGlobals.ActiveVessel.OnFlyByWire -= new FlightInputCallback(fly);
-					FlightGlobals.ActiveVessel.OnPostAutopilotUpdate -= new FlightInputCallback(postAutopilot);
+					FlightGlobals.ActiveVessel.OnFlyByWire -= new FlightInputCallback(Fly);
+//					FlightGlobals.ActiveVessel.OnPostAutopilotUpdate -= new FlightInputCallback(PostAutopilot);
 				}
 			}
 		}
@@ -90,7 +90,7 @@ namespace AscentOptimizer
 			if (GUILayout.Button("X", buttonStyle))
 			{
 				controlEnabled = false;
-				FlightGlobals.ActiveVessel.OnFlyByWire -= new FlightInputCallback(fly);
+				FlightGlobals.ActiveVessel.OnFlyByWire -= new FlightInputCallback(Fly);
 			}
 			GUILayout.EndHorizontal();
 		}
@@ -236,6 +236,27 @@ namespace AscentOptimizer
 		 * Update()
 		 */
 
+		/********************  Notes on objects and fields  ************************/
+
+		// There seems to be a little bit of hidden state: the yaw control is changing something else
+		// (like the angle of the thruster?) that has some inertia and takes some time to get to its final angle.
+		//
+		// For throttle, ModuleEngine has these fields:
+		//
+		// float ModuleEngines.currentThrottle
+		// The current internal throttle of the engine, which may be different from the current throttle set by the player if useEngineResponseTime is true.
+
+		// float ModuleEngines.engineAccelerationSpeed
+		// How quickly the engine spools up when the user-set throttle is higher than currentThrottle.
+
+		// Each frame, if the user throttle is higher than the engine's currentThrottle, currentThrottle is updated according to the formula
+
+		// currentThrottle += (user throttle - currentThrottle) * engineAccelerationSpeed* dt
+		// engineAccelerationSpeed has units of inverse seconds.
+
+
+		/***********************  Notes on physics, math and control theory  ***************************/
+
 		// So what order of control do we have?
 		// Our input affects the derivative of our facing, which affects the
 		// derivative of our velocity.  So second order, I think.  So the relevant
@@ -279,35 +300,20 @@ namespace AscentOptimizer
 		//
 		// What's more, because they're all proportional to wi, its easy to do exponential weighting!
 
-		private void postAutopilot(FlightCtrlState s)
+		private void UpdateSystemIdentification()
 		{
-			// This seems to affect, not the next FixedUpdate(), but the one after that, or even the one after that!
-			// Actually, there seems to be a little bit of hidden state: the yaw control is changing something else
-			// (like the angle of the thruster?) that has some inertia and takes some time to get to its final angle.
-			//
-			// For throttle, ModuleEngine has these fields:
-			//
-			// float ModuleEngines.currentThrottle
-			// The current internal throttle of the engine, which may be different from the current throttle set by the player if useEngineResponseTime is true.
-
-			// float ModuleEngines.engineAccelerationSpeed
-			// How quickly the engine spools up when the user-set throttle is higher than currentThrottle.
-
-			// Each frame, if the user throttle is higher than the engine's currentThrottle, currentThrottle is updated according to the formula
-
-			// currentThrottle += (user throttle - currentThrottle) * engineAccelerationSpeed* dt
-			// engineAccelerationSpeed has units of inverse seconds.
-
 			Vessel vessel = FlightGlobals.ActiveVessel;
-			Vector3d linearAcc = (vessel.velocityD - prevVelocity) / TimeWarp.deltaTime;
+			//Vector3d linearAcc = (vessel.velocityD - prevVelocity) / TimeWarp.deltaTime;
 
 			Vector3 globalAngularMom = vessel.transform.TransformDirection(vessel.angularMomentum);
 
 			// For torque: x: pitch, y: roll, z: yaw
 			Vector3 torque = vessel.transform.InverseTransformDirection((globalAngularMom - prevAngularMom) / TimeWarp.deltaTime);
+			/*
 			print("postAutopilot: throttle: " + s.mainThrottle + ", yaw: " + s.yaw + "\n" +
 				  "throttle: " + prevState.mainThrottle + " -> " + toStr(linearAcc.magnitude) + ", yaw: " + prevState.yaw + " -> " + toStr(torque.z, 5) +
 				  ", pitch: " + prevState.pitch + " -> " + toStr(torque.x, 5) + ", roll: " + prevState.roll + " -> " + toStr(torque.y, 5));//+", transformed: " + toStr(vessel.transform.TransformDirection(vessel.angularMomentum)));
+				  */
 
 			/*			print("deltaT: " + toStr(TimeWarp.deltaTime) + "\n" +
 							  "accel: " + toStr(vessel.acceleration_immediate, 5) + ", from deltaT: " + toStr(deltaVelocity / TimeWarp.deltaTime, 5) + "\n" +
@@ -327,12 +333,12 @@ namespace AscentOptimizer
 			yawToTorque.observe(prevState.yaw, torque.z, weight);
 			pitchToTorque.observe(prevState.pitch, torque.x, weight);
 			rollToTorque.observe(prevState.roll, torque.y, weight);
-
-			//			prevState.CopyFrom(s);
 		}
 
-		private void fly(FlightCtrlState s)
+		private void Fly(FlightCtrlState s)
 		{
+			UpdateSystemIdentification();
+
 			var vessel = FlightGlobals.ActiveVessel;
 
 			Orbit orbit = vessel.orbit;
