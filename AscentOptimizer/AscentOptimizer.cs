@@ -16,7 +16,9 @@ namespace AscentOptimizer
 		FlightCtrlState prevState = new FlightCtrlState();
 
 		Vector3 deltaAngleUI;
+		Vector3 desiredMOMUI;
 		Vector3 desiredTorqueUI;
+		bool usingPIDYaw;
 
 		// Note: a conservative value for prior_x_coeff is a LARGE value.  A large value means we think we only need
 		// small control values to produce reasonable torque.
@@ -216,7 +218,12 @@ namespace AscentOptimizer
 			// y: yaw
 			// x: pitch
 
+			AddLabel("desired MOM: " + toStr(desiredMOMUI));
+			AddLabel(" actual MOM: " + toStr(vessel.angularMomentum));
+
 			AddLabel("desiredTorque: " + toStr(desiredTorqueUI));
+
+			AddLabel("yaw PID: " + (usingPIDYaw ? "YES" : "no"));
 
 			AddLabel("pitch: " + toStr(prevState.pitch) + ", roll: " + toStr(prevState.roll) + ", yaw: " + toStr(prevState.yaw));
 
@@ -335,6 +342,45 @@ namespace AscentOptimizer
 			rollToTorque.observe(prevState.roll, torque.y, weight);
 		}
 
+		private Vector3 toEuler(Vector3d targetDirection)
+		{
+			// The "alice" vector is "through the looking glass," i.e. mirrored.  X & Z are swapped.
+			Vector3d aliceTarget = new Vector3d();
+			aliceTarget.x = targetDirection.x;
+			aliceTarget.y = targetDirection.z;
+			aliceTarget.z = targetDirection.y;
+
+			Vector3 euler = Quaternion.LookRotation(aliceTarget).eulerAngles;
+			if (euler.x > 180)
+			{
+				euler.x -= 360;
+			}
+			if (euler.y > 180)
+			{
+				euler.y -= 360;
+			}
+			euler *= (float)Math.PI / 180;
+
+			return euler;
+		}
+
+		private float sgn(float x)
+		{
+			if (x < 0)
+			{
+				return -1;
+			}
+			else {
+				return 1;
+			}
+		}
+
+		// "E" means "element wise".
+		private Vector3 AbsE(Vector3 v)
+		{
+			return new Vector3(Math.Abs(v.x), Math.Abs(v.y), Math.Abs(v.z));
+		}
+
 		private void Fly(FlightCtrlState s)
 		{
 			UpdateSystemIdentification();
@@ -366,38 +412,105 @@ namespace AscentOptimizer
 
 			// Let's face an arbitrary direction, for now prograde:
 			Vector3d targetDirection = vessel.transform.InverseTransformDirection(vessel.orbit.GetRelativeVel().normalized);
-			double oldY = targetDirection.y;
-			targetDirection.y = targetDirection.z;
-			targetDirection.z = oldY;
 
-			Vector3 euler = Quaternion.LookRotation(targetDirection).eulerAngles;
-			if (euler.x > 180)
-			{
-				euler.x -= 360;
-			}
-			if (euler.y > 180)
-			{
-				euler.y -= 360;
-			}
-			euler *= (float)Math.PI / 180;
+			Vector3 euler = toEuler(targetDirection);
+
 			// y: yaw
 			// x: pitch
 
-			// Translate targetDirection from angle into angular momentum:
-			var deltaAngle = new Vector3((float)euler.x * vessel.MOI.x, 0, (float)euler.y * vessel.MOI.z);
-			deltaAngleUI = deltaAngle;
+			// Let's figure out our desired angular momentum.
+			//
+			// For now we pretend that all axeses are independent.
+			//
+			// If we multiply angle by MOI, then we have a simple differential equation in terms of the result.
 
+			// Translate targetDirection from angle into angular momentum:
+			var deltaAngleTimesMOI = new Vector3((float)euler.x * vessel.MOI.x, 0, (float)euler.y * vessel.MOI.z);
+
+			deltaAngleUI = deltaAngleTimesMOI;
 
 			// For angularMomentum: x: pitch, y: roll, z: yaw
 
+			// The coefficients above tell us the maximum rate of change of angular momentum.  At maximum breaking,
+			// we assume a constant deceleration of coeff.  Assuming we stop at time t = 0 (so current time is negative),
+			// we have:
+			//
+			// mom = - t * coeff
+			// angleMOI = - 1/2 * t^2 * coeff
+			//
+			// We want to determine mom from angleMOI, so solve the second one for t and substitute:
+			//
+			// t = - sqrt(2 * angleMOI / coeff)
+			//
+			// Substitue in the first:
+			//
+			// mom = - sgn(angleMOI) * sqrt(2 * angleMOI / coeff) * coeff
+			//     = - sgn(angleMOI) * sqrt(2 * angleMOI * coeff)
+			//
+			var desiredMOM = new Vector3(- sgn(deltaAngleTimesMOI.x) * (float)Math.Sqrt(2 * Math.Abs(deltaAngleTimesMOI.x * pitchCoeff/2)),
+			                             0,
+			                             - sgn(deltaAngleTimesMOI.z) * (float)Math.Sqrt(2 * Math.Abs(deltaAngleTimesMOI.z * yawCoeff/2)));
+			desiredMOMUI = desiredMOM;
+
 			// Coefficient of angularMomentum that produces a torque required to eliminate in a handfull of timesteps.
 			var d = 1 / TimeWarp.fixedDeltaTime / 2f;
+			var desiredTorqueTrajectory = d * (desiredMOM - vessel.angularMomentum);
+			// print(toStr(-d) + " * " + toStr(vessel.angularMomentum) + " - " + toStr(p) + " * " + toStr(deltaAngleTimesMOI) + " = " + toStr(desiredTorque));
+			desiredTorqueUI = desiredTorqueTrajectory;
+
+			// The formula above oscillates when near the target direction.  So if we're close, just use standard PID
+			// control.  We define "close" as the control inputs needed for PID control are possible (i.e., between -1 and 1),
+			// based only on the magnitudes of the position and velocity.
+			//
+			// Would be interesting to figure out why the "trajectory" calculation oscillates.  It might be because any
+			// controls we give now, their effects are typically delayed a frame or two.  But the PID controller doesn't
+			// take that into account, and it damps out very quickly.  They both have a - d * vessel.angularMomentum
+			// term, which by itself does a great job of eliminating angular momentum.  So how do their deltaAngleTimesMOI
+			// terms differ?
+			//
+			// For positive deltaAngleTimesMOI.z:
+			//
+			// desiredTorqueTrajectory.z (ignoring - d * vessel.angularMomentum part) =
+			//     - d * sqrt(2 * deltaAngleTimesMOI.z * |yawCoeff|/2)
+			//
+			// desiredTorquePID.z (ignoring same) =
+			//     - d * d / 4 * deltaAngleTimesMOI.z
+			//
+			// The first should be much smaller than the second (d >> 1, deltaAngleTimesMOI.z << 1).  So, it should be
+			// a very overdamped system.  Hmm.  Something's wrong.
+
 			// For critical damping, we want d = 2 * sqrt(p), i.e.
 			var p = d * d / 4;
-			var desiredTorque = - d * vessel.angularMomentum - p * deltaAngle;
-			print(toStr(-d) + " * " + toStr(vessel.angularMomentum) + " - " + toStr(p) + " * " + toStr(deltaAngle) + " = " + toStr(desiredTorque));
-			desiredTorqueUI = desiredTorque;
+			var desiredTorquePIDAbs = AbsE(d * vessel.angularMomentum) + AbsE(p * deltaAngleTimesMOI);
+			var desiredTorquePID = -d * vessel.angularMomentum - p * deltaAngleTimesMOI;
+			Vector3 desiredTorque = new Vector3();
+			if (desiredTorquePIDAbs.x / Math.Abs(pitchCoeff) < 1)
+			{
+				desiredTorque.x = desiredTorquePID.x;
+			}
+			else {
+				desiredTorque.x = desiredTorqueTrajectory.x;
+			}
 
+			if (desiredTorquePIDAbs.y / Math.Abs(rollCoeff) < 1)
+			{
+				desiredTorque.y = desiredTorquePID.y;
+			}
+			else {
+				desiredTorque.y = desiredTorqueTrajectory.y;
+			}
+
+//			if (true)
+			if (desiredTorquePIDAbs.z / Math.Abs(yawCoeff) < 1)
+			{
+				desiredTorque.z = desiredTorquePID.z;
+				usingPIDYaw = true;
+			}
+			else {
+				desiredTorque.z = desiredTorqueTrajectory.z;
+				usingPIDYaw = false;
+			}
+				
 			s.pitch = Math.Max(-1, Math.Min(1, desiredTorque.x / pitchCoeff));
 			s.roll = Math.Max(-1, Math.Min(1, desiredTorque.y / rollCoeff));
 			s.yaw = Math.Max(-1, Math.Min(1, desiredTorque.z / yawCoeff));
