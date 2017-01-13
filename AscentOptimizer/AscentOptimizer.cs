@@ -18,7 +18,16 @@ namespace AscentOptimizer
 		Vector3 deltaAngleUI;
 		Vector3 desiredMOMUI;
 		Vector3 desiredTorqueUI;
-		bool usingPIDYaw;
+
+		double dUI;
+		double pUI;
+		double desiredMOMZUI;
+		double desiredMOMZOldUI;
+		double deltaAngleTimesMOIzUI;
+
+		Vector3 torqueFromMomentumUI;
+		Vector3 torqueFromPositionUI;
+		double desiredDeltaYawNextTimestepUI;
 
 		// Note: a conservative value for prior_x_coeff is a LARGE value.  A large value means we think we only need
 		// small control values to produce reasonable torque.
@@ -223,9 +232,17 @@ namespace AscentOptimizer
 
 			AddLabel("desiredTorque: " + toStr(desiredTorqueUI));
 
-			AddLabel("yaw PID: " + (usingPIDYaw ? "YES" : "no"));
-
 			AddLabel("pitch: " + toStr(prevState.pitch) + ", roll: " + toStr(prevState.roll) + ", yaw: " + toStr(prevState.yaw));
+
+			AddLabel("--------------------");
+			AddLabel("d = "+toStr(dUI));
+			AddLabel("p [d * d / 4] = " + toStr(pUI));
+			AddLabel("deltaAngleTimesMOI.z = " + toStr(deltaAngleTimesMOIzUI));
+			AddLabel("desiredMomentum.z      = " + toStr(desiredMOMZUI));
+			AddLabel("desiredMomentum old .z = " + toStr(desiredMOMZOldUI));
+			AddLabel("desiredDeltaYawNextTimestepUI = " + toStr(desiredDeltaYawNextTimestepUI));
+			AddLabel("torque from momentum: " + toStr(torqueFromMomentumUI.z));
+			AddLabel("torque from position: " + toStr(torqueFromPositionUI.z));
 
 			GUILayout.EndVertical();
 			GUI.DragWindow();
@@ -375,10 +392,27 @@ namespace AscentOptimizer
 			}
 		}
 
+		/*
 		// "E" means "element wise".
 		private Vector3 AbsE(Vector3 v)
 		{
 			return new Vector3(Math.Abs(v.x), Math.Abs(v.y), Math.Abs(v.z));
+		}
+		*/
+
+		private float getDesiredAngularMomentum(float posTimesMOI, float accel, float timeStep)
+		{
+			accel = Math.Abs(accel);
+			// We want our position as a function of time to be 0.5 * a * t^2, where we're stopped at time t=0 and
+			// the current time is negative.  Solve for time:
+			float timeToStop = (float)Math.Sqrt(Math.Abs(posTimesMOI) * 2 / accel);
+			if (timeToStop <= 2*timeStep)
+			{
+				// If we slow down at full accel, we'll overshoot.  Instead, compute delta momentum needed to stop
+				// in two time steps.  Using one time step can lead to oscillation (if timeStep == TimeWarp.fixedDeltaTime)
+				return -posTimesMOI / (2*timeStep);
+			}
+			return - sgn(posTimesMOI) * accel * (timeToStop - timeStep);
 		}
 
 		private void Fly(FlightCtrlState s)
@@ -447,40 +481,56 @@ namespace AscentOptimizer
 			// mom = - sgn(angleMOI) * sqrt(2 * angleMOI / coeff) * coeff
 			//     = - sgn(angleMOI) * sqrt(2 * angleMOI * coeff)
 			//
-			var desiredMOM = new Vector3(- sgn(deltaAngleTimesMOI.x) * (float)Math.Sqrt(2 * Math.Abs(deltaAngleTimesMOI.x * pitchCoeff/2)),
-			                             0,
-			                             - sgn(deltaAngleTimesMOI.z) * (float)Math.Sqrt(2 * Math.Abs(deltaAngleTimesMOI.z * yawCoeff/2)));
-			desiredMOMUI = desiredMOM;
+
+			float desiredAccelCoeff = 0.8f;
+
+			// I'm not really sure the best setting for "action time" here.  A lower value means stiffer control.
+			// Using TimeWarp.fixedDeltaTime works fine for my simple test rocket, so I use 2 * that just to be safe.
+			float actionTime = 2 * TimeWarp.fixedDeltaTime;
+
+			var desiredAngularMomentum =
+				new Vector3(getDesiredAngularMomentum(deltaAngleTimesMOI.x, pitchCoeff * desiredAccelCoeff, actionTime),
+							0,
+				            getDesiredAngularMomentum(deltaAngleTimesMOI.z, yawCoeff * desiredAccelCoeff, actionTime));
+
+			desiredMOMUI = desiredAngularMomentum;
+			desiredMOMZOldUI = -sgn(deltaAngleTimesMOI.z) * (float)Math.Sqrt(2 * Math.Abs(deltaAngleTimesMOI.z * yawCoeff * desiredAccelCoeff));
+			desiredMOMZUI = desiredAngularMomentum.z;
 
 			// Coefficient of angularMomentum that produces a torque required to eliminate in a handfull of timesteps.
-			var d = 1 / TimeWarp.fixedDeltaTime / 2f;
-			var desiredTorqueTrajectory = d * (desiredMOM - vessel.angularMomentum);
+			var d = 1 / actionTime;
+			// var desiredTorqueTrajectory = d * (desiredAngularMomentum - vessel.angularMomentum);
 			// print(toStr(-d) + " * " + toStr(vessel.angularMomentum) + " - " + toStr(p) + " * " + toStr(deltaAngleTimesMOI) + " = " + toStr(desiredTorque));
-			desiredTorqueUI = desiredTorqueTrajectory;
+			// desiredTorqueUI = desiredTorqueTrajectory;
 
 			// The formula above oscillates when near the target direction.  So if we're close, just use standard PID
 			// control.  We define "close" as the control inputs needed for PID control are possible (i.e., between -1 and 1),
 			// based only on the magnitudes of the position and velocity.
-			//
-			// Would be interesting to figure out why the "trajectory" calculation oscillates.  It might be because any
-			// controls we give now, their effects are typically delayed a frame or two.  But the PID controller doesn't
-			// take that into account, and it damps out very quickly.  They both have a - d * vessel.angularMomentum
-			// term, which by itself does a great job of eliminating angular momentum.  So how do their deltaAngleTimesMOI
-			// terms differ?
-			//
-			// For positive deltaAngleTimesMOI.z:
-			//
-			// desiredTorqueTrajectory.z (ignoring - d * vessel.angularMomentum part) =
-			//     - d * sqrt(2 * deltaAngleTimesMOI.z * |yawCoeff|/2)
-			//
-			// desiredTorquePID.z (ignoring same) =
-			//     - d * d / 4 * deltaAngleTimesMOI.z
-			//
-			// The first should be much smaller than the second (d >> 1, deltaAngleTimesMOI.z << 1).  So, it should be
-			// a very overdamped system.  Hmm.  Something's wrong.
+
+			// Instead, we should probably compute the desired position * MOI & angular momentum at the next timestep,
+			// then use PID control to try to achieve.  If we can get to the position within 1 timestep (i.e. if the distance
+			// is less than 1/2 a t^2 for our desired max acceleration), we can just use zero for both and we get PID control.
+
 
 			// For critical damping, we want d = 2 * sqrt(p), i.e.
-			var p = d * d / 4;
+			// var p = d * d / 4;
+
+			dUI = d;
+			// pUI = p;
+			deltaAngleTimesMOIzUI = deltaAngleTimesMOI.z;
+
+			//Vector3 deltaAngleTimesMOIChange = new Vector3(vessel.angularMomentum.x, 0, vessel.angularMomentum.z) * TimeWarp.fixedDeltaTime;
+
+			//var desiredTorque = d * (desiredAngularMomentum - vessel.angularMomentum) + p * (desiredAngleTimesMOI - (deltaAngleTimesMOI + deltaAngleTimesMOIChange));
+			var desiredTorque = d * (desiredAngularMomentum - vessel.angularMomentum);// + p * (desiredAngleTimesMOI - deltaAngleTimesMOI);
+			desiredTorqueUI = desiredTorque;
+
+			// torqueFromMomentumUI = d * (desiredAngularMomentum - vessel.angularMomentum);
+//			torqueFromPositionUI = p * (desiredAngleTimesMOI - deltaAngleTimesMOI);
+//			desiredDeltaYawNextTimestepUI = desiredAngleTimesMOI.z - deltaAngleTimesMOI.z;
+
+
+			/*
 			var desiredTorquePIDAbs = AbsE(d * vessel.angularMomentum) + AbsE(p * deltaAngleTimesMOI);
 			var desiredTorquePID = -d * vessel.angularMomentum - p * deltaAngleTimesMOI;
 			Vector3 desiredTorque = new Vector3();
@@ -510,6 +560,7 @@ namespace AscentOptimizer
 				desiredTorque.z = desiredTorqueTrajectory.z;
 				usingPIDYaw = false;
 			}
+			*/
 				
 			s.pitch = Math.Max(-1, Math.Min(1, desiredTorque.x / pitchCoeff));
 			s.roll = Math.Max(-1, Math.Min(1, desiredTorque.y / rollCoeff));
