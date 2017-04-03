@@ -1,4 +1,8 @@
 ﻿using System;
+// using UnityEngine; // For Debug.Log().
+using System.Diagnostics;
+
+
 namespace AscentOptimizer
 {
 	public class SimpleLinearRegression
@@ -51,14 +55,33 @@ namespace AscentOptimizer
 		public double prior_x_y_covariance;
 		public double prior_var_x;
 
+		private void print(String s)
+		{
+			UnityEngine.Debug.Log(s);
+		}
+
+		private void check(double v, String msg)
+		{
+			if (Double.IsNaN(v))
+			{
+				print("@@@@@@@ " + msg);
+			}
+		}
+
 		public SimpleLinearRegression(double prior_x_coefficient, double prior_var_x)
 		{
+			check(prior_x_coefficient, "prior_x_coeff");
+			check(prior_var_x, "prior_var_x");
 			this.prior_var_x = prior_var_x;
 			prior_x_y_covariance = prior_x_coefficient * prior_var_x;
 		}
 
 		public void observe(double x, double y, double w)
 		{
+			check(x, "observe x");
+			check(y, "observe y");
+			check(w, "observe w");
+
 			double w_x = w * x;
 			sum_w_x += w_x;
 			sum_w_y += w * y;
@@ -69,6 +92,7 @@ namespace AscentOptimizer
 
 		public void decay(double gamma)
 		{
+			check(gamma, "decay gamma");
 			sum_w_x *= gamma;
 			sum_w_y *= gamma;
 			sum_w_x_x *= gamma;
@@ -97,13 +121,26 @@ namespace AscentOptimizer
 			// assuming it was the same for both the observed & the prior.
 			//
 			// Note that x_coeff * var_x is just x_y_covariance.
+			if (sum_w == 0.0)
+			{
+				print("@@@@@ sum_w == 0");
+			}
 
 			double mean_x = sum_w_x / sum_w;
 			double mean_y = sum_w_y / sum_w;
 			var_x = sum_w_x_x / sum_w - mean_x * mean_x;
 			double x_y_covariance = (sum_w_x_y / sum_w - mean_x * mean_y);
-			x_coefficient = (x_y_covariance + prior_x_y_covariance) / (var_x + prior_var_x);
-			intercept = mean_y - x_coefficient * mean_x;
+			if (Double.IsNaN(var_x) || Double.IsInfinity(var_x))
+			{
+				// Must have had a divide by zero above, or at least an overflow.  Just return the prior.
+				var_x = 0;
+				x_coefficient = prior_x_y_covariance / prior_var_x;
+				intercept = 0;
+			}
+			else {
+				x_coefficient = (x_y_covariance + prior_x_y_covariance) / (var_x + prior_var_x);
+				intercept = mean_y - x_coefficient * mean_x;
+			}
 		}
 	}
 }

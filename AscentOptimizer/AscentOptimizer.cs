@@ -27,11 +27,17 @@ namespace AscentOptimizer
 		const double regressionHalfLife = 5.0; // In seconds.
 		double regressionFactor = Math.Log(2) / regressionHalfLife;
 
+		bool doinPhysics = false;
+		bool firstPhysicsFrame = true;
+
 		public void Start()
 		{
 			enabled = true;
 			// Some day we might add settings, like AeroGUI
 			// ConfigNode settings = GameDatabase.Instance.GetConfigNodes("ASCENTOPT")[0];
+			GameEvents.onVesselGoOffRails.Add(VesselGoOffRails);
+			GameEvents.onVesselGoOnRails.Add(VesselGoOnRails);
+
 		}
 
 		public void OnGUI()
@@ -47,9 +53,21 @@ namespace AscentOptimizer
 			}
 		}
 
+		private void VesselGoOffRails(Vessel vessel)
+		{
+			print("----------  Off Rails  -----------");
+			doinPhysics = true;
+			firstPhysicsFrame = true;
+		}
+
+		private void VesselGoOnRails(Vessel vessel)
+		{
+			print("----------  On Rails  -----------");
+			doinPhysics = false;
+		}
+
 		public void Update()
 		{
-			print("------- Update() ----------");
 			if (GameSettings.MODIFIER_KEY.GetKey() && Input.GetKeyDown(key))
 			{
 				controlEnabled = !controlEnabled;
@@ -231,6 +249,10 @@ namespace AscentOptimizer
 		// Learning: FlightInputHandler.state.yaw is what will be used over the next time step.
 
 
+		//////////  Surface vs Orbit
+		// vessel.orbit.GetRelativeVel() points prograde relative to orbit.
+
+
 		/***********************  Notes on physics, math and control theory  ***************************/
 
 		// So what order of control do we have?
@@ -290,13 +312,42 @@ namespace AscentOptimizer
 			double prevWeight = Math.Exp(-regressionFactor * TimeWarp.deltaTime);
 			double weight = 1 - prevWeight;
 
-			yawToTorque.decay(prevWeight);
-			pitchToTorque.decay(prevWeight);
-			rollToTorque.decay(prevWeight);
+			if (Double.IsNaN(prevWeight) || Double.IsNaN(weight))
+			{
+				print("**********  It's the weight!");
+			}
 
-			yawToTorque.observe(prevState.yaw, torque.z, weight);
-			pitchToTorque.observe(prevState.pitch, torque.x, weight);
-			rollToTorque.observe(prevState.roll, torque.y, weight);
+			if (Single.IsNaN(prevState.pitch))
+			{
+				print("*********  pitch!");
+			}
+			if (Single.IsNaN(prevState.roll))
+			{
+				print("*********  roll!");
+			}
+			if (Single.IsNaN(prevState.yaw))
+			{
+				print("*********  yaw!");
+			}
+
+
+			if (!Single.IsNaN(torque.x) && !Single.IsNaN(prevState.yaw))
+			{
+				pitchToTorque.decay(prevWeight);
+				pitchToTorque.observe(prevState.pitch, torque.x, weight);
+			}
+
+			if (!Single.IsNaN(torque.y) && !Single.IsNaN(prevState.roll))
+			{
+				rollToTorque.decay(prevWeight);
+				rollToTorque.observe(prevState.roll, torque.y, weight);
+			}
+
+			if (!Single.IsNaN(torque.z) && !Single.IsNaN(prevState.yaw))
+			{
+				yawToTorque.decay(prevWeight);
+				yawToTorque.observe(prevState.yaw, torque.z, weight);
+			}
 		}
 
 		private Vector3 toEuler(Vector3d targetDirection)
@@ -347,9 +398,34 @@ namespace AscentOptimizer
 			return - sgn(posTimesMOI) * accel * (timeToStop - timeStep);
 		}
 
+		private void check(float v, String msg)
+		{
+			if (Single.IsNaN(v))
+			{
+				print("@@@@@@@@ " + msg);
+			}
+		}
+
+		private void check(double v, String msg)
+		{
+			check((float)v, msg);
+		}
+		
 		private void Fly(FlightCtrlState s)
 		{
-			UpdateSystemIdentification();
+			if (!doinPhysics)
+			{
+				return;
+			}
+
+			if (firstPhysicsFrame)
+			{
+				print("----------  First frame, skipping update  ----------");
+				firstPhysicsFrame = false;
+			}
+			else {
+				UpdateSystemIdentification();
+			}
 
 			var vessel = FlightGlobals.ActiveVessel;
 
@@ -375,9 +451,16 @@ namespace AscentOptimizer
 			float yawCoeff = coeff(yawToTorque);
 
 			// Let's face an arbitrary direction, for now prograde:
-			Vector3d targetDirection = vessel.transform.InverseTransformDirection(vessel.orbit.GetRelativeVel().normalized);
+			// Relative to orbit:
+			//Vector3d targetDirection = vessel.transform.InverseTransformDirection(vessel.orbit.GetRelativeVel().normalized);
+			// Relative to surface
+			Vector3d targetDirection = vessel.transform.InverseTransformDirection(vessel.srf_vel_direction);
+			check(targetDirection.x, "target direction x");
+			check(targetDirection.z, "target direction z");
 
 			Vector3 euler = toEuler(targetDirection);
+			check(euler.x, "euler.x");
+			check(euler.y, "euler.y");
 
 			// y: yaw
 			// x: pitch
@@ -416,6 +499,12 @@ namespace AscentOptimizer
 
 			var desiredTorque = (desiredAngularMomentum - vessel.angularMomentum) / actionTime;
 			desiredTorqueUI = desiredTorque;
+
+			check(desiredTorque.x, "desired torque x");
+			check(desiredTorque.y, "desired torque y");
+			check(desiredTorque.z, "desired torque z");
+
+			check(pitchCoeff, "pitchCoeff");
 
 				
 			s.pitch = Math.Max(-1, Math.Min(1, desiredTorque.x / pitchCoeff));
